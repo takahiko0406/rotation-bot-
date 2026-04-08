@@ -71,8 +71,11 @@ Score gap: {result['gap']}
 Changed: {'YES' if changed else 'NO'}
 """
 
-    send_telegram(message)
-    print("Telegram sent (forced).")
+    if changed:
+        send_telegram(message)
+        print("Telegram sent.")
+    else:
+        print("No change.")
 
     save_signal(result)
     print("Done.")
