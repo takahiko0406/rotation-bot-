@@ -20,7 +20,7 @@ jobs:
 
       - name: Install packages
         run: |
-          pip install pandas requests
+          pip install pandas requests numpy yfinance scikit-learn
 
       - name: Run model
         env:
