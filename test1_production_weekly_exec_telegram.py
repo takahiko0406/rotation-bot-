@@ -36,6 +36,9 @@ def send_telegram(message: str):
 import subprocess
 import sys
 
+import subprocess
+import sys
+
 def run_model():
     script_path = "model_c_plus_usd_hyg_short_conviction.py"
     csv_path = "model_c_plus_usd_hyg_short_conviction_latest_recommendation.csv"
@@ -44,12 +47,20 @@ def run_model():
         [sys.executable, script_path],
         capture_output=True,
         text=True,
-        check=True,
     )
 
+    print("MODEL STDOUT:")
     print(result.stdout)
-    if result.stderr:
-        print(result.stderr)
+
+    print("MODEL STDERR:")
+    print(result.stderr)
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Real model failed with exit code {result.returncode}\n\n"
+            f"STDOUT:\n{result.stdout}\n\n"
+            f"STDERR:\n{result.stderr}"
+        )
 
     df = pd.read_csv(csv_path)
     row = df.iloc[-1]
