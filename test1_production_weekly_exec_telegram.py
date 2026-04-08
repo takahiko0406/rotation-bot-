@@ -7,6 +7,14 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 SIGNAL_FILE = "latest_signal.csv"
 
+# optimized alert thresholds
+ROTATION_GAP_MIN = 0.010
+CONVICTION_JUMP_MIN = 0.015
+EXTREME_GAP_MIN = 0.030
+DOWNTURN_TOP_SCORE = -0.003
+RISK_OFF_MIN = 1.20
+NOISE_GAP_MAX = 0.008
+
 
 def send_telegram(message: str):
     if not BOT_TOKEN:
@@ -33,49 +41,108 @@ def run_model():
         "top_score": 0.0178,
         "second_score": 0.0054,
         "gap": 0.0124,
+        "risk_off_strength": 0.30,
     }
 
 
 def load_previous():
     if not os.path.exists(SIGNAL_FILE):
         return None
-    return pd.read_csv(SIGNAL_FILE)
+    df = pd.read_csv(SIGNAL_FILE)
+    if df.empty:
+        return None
+    return df
 
 
-def save_signal(data):
+def save_signal(data: dict):
     pd.DataFrame([data]).to_csv(SIGNAL_FILE, index=False)
 
 
-def is_changed(prev, new):
-    if prev is None or prev.empty:
-        return True
-    return prev.iloc[0]["top_asset"] != new["top_asset"]
+def get_prev_value(prev_df, col, default=None):
+    if prev_df is None or prev_df.empty or col not in prev_df.columns:
+        return default
+    return prev_df.iloc[0][col]
+
+
+def should_alert(prev_df, result: dict):
+    prev_top = get_prev_value(prev_df, "top_asset", None)
+    prev_gap = get_prev_value(prev_df, "gap", None)
+
+    new_top = result["top_asset"]
+    gap = result["gap"]
+    top_score = result["top_score"]
+    risk_off_strength = result["risk_off_strength"]
+
+    strong_rotation = (prev_top != new_top) and (gap >= ROTATION_GAP_MIN)
+
+    conviction_jump = False
+    if prev_gap is not None:
+        conviction_jump = abs(gap - prev_gap) >= CONVICTION_JUMP_MIN
+
+    extreme_conviction = gap >= EXTREME_GAP_MIN
+    downturn = top_score <= DOWNTURN_TOP_SCORE
+    risk_off = risk_off_strength >= RISK_OFF_MIN
+
+    alert = (
+        strong_rotation
+        or conviction_jump
+        or extreme_conviction
+        or downturn
+        or risk_off
+    )
+
+    if (gap < NOISE_GAP_MAX) and (top_score > DOWNTURN_TOP_SCORE) and not risk_off:
+        alert = False
+
+    reasons = []
+    if strong_rotation:
+        reasons.append(f"strong rotation (gap >= {ROTATION_GAP_MIN:.3f})")
+    if conviction_jump:
+        reasons.append(f"conviction jump (|Δgap| >= {CONVICTION_JUMP_MIN:.3f})")
+    if extreme_conviction:
+        reasons.append(f"extreme conviction (gap >= {EXTREME_GAP_MIN:.3f})")
+    if downturn:
+        reasons.append(f"downturn (top_score <= {DOWNTURN_TOP_SCORE:.3f})")
+    if risk_off:
+        reasons.append(f"risk-off (risk_off_strength >= {RISK_OFF_MIN:.2f})")
+
+    return alert, reasons, prev_top, prev_gap
 
 
 def main():
     print("Running model...")
     result = run_model()
 
-    prev = load_previous()
-    changed = is_changed(prev, result)
+    prev_df = load_previous()
+    alert, reasons, prev_top, prev_gap = should_alert(prev_df, result)
+
+    changed = prev_top != result["top_asset"] if prev_top is not None else True
+    reason_text = ", ".join(reasons) if reasons else "no alert condition"
 
     message = f"""📊 Rotation update
 Time: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 Signal date: {result['date']}
-Top asset: {result['top_asset']}
+
+Previous top asset: {prev_top if prev_top is not None else 'None'}
+Current top asset: {result['top_asset']}
 Second asset: {result['second_asset']}
-Top score: {result['top_score']}
-Second score: {result['second_score']}
-Score gap: {result['gap']}
+
+Top score: {result['top_score']:.4f}
+Second score: {result['second_score']:.4f}
+Gap: {result['gap']:.4f}
+Previous gap: {prev_gap if prev_gap is not None else 'None'}
+Risk-off strength: {result['risk_off_strength']:.3f}
+
 Changed: {'YES' if changed else 'NO'}
+Alert reason: {reason_text}
 """
 
-    if changed:
+    if alert:
         send_telegram(message)
         print("Telegram sent.")
     else:
-        print("No change.")
+        print("No alert condition met.")
 
     save_signal(result)
     print("Done.")
