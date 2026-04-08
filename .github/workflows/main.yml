@@ -1,30 +1,116 @@
-name: Run Rotation Model
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import time
+from datetime import datetime
 
-on:
-  schedule:
-    - cron: "0 * * * *"
-  workflow_dispatch:
+# =========================
+# SAFE DOWNLOAD (CRITICAL FIX)
+# =========================
+def safe_download(tickers, start=None, end=None):
+    for i in range(3):
+        try:
+            data = yf.download(
+                tickers,
+                start=start,
+                end=end,
+                progress=False,
+                threads=False  # FIX: prevents "database is locked"
+            )
+            if not data.empty:
+                return data
+        except Exception as e:
+            print(f"Download attempt {i+1} failed:", e)
+        time.sleep(2)
 
-jobs:
-  run-model:
-    runs-on: ubuntu-latest
+    raise ValueError("Failed to download data after retries")
 
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.10"
+print("Current working directory:", __file__)
 
-      - name: Install packages
-        run: |
-          pip install pandas requests numpy yfinance scikit-learn
+# =========================
+# PARAMETERS
+# =========================
+tickers = ["QQQM", "XLE", "XSOE"]
+macro_tickers = ["^IRX", "^TNX", "CL=F", "DX-Y.NYB", "^VIX", "HYG", "SOXX"]
 
-      - name: Run model
-        env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: |
-          python test1_production_weekly_exec_telegram.py
+start_date = "2015-01-01"
+
+# =========================
+# DOWNLOAD DATA
+# =========================
+print("Downloading price data...")
+prices = safe_download(tickers, start=start_date)["Adj Close"]
+
+print("Downloading macro proxies...")
+macro = safe_download(macro_tickers, start=start_date)["Adj Close"]
+
+# =========================
+# VALIDATION (CRITICAL)
+# =========================
+if prices.empty:
+    raise ValueError("Price data is empty")
+
+if macro.empty:
+    raise ValueError("Macro data is empty")
+
+# =========================
+# BASIC FEATURES
+# =========================
+returns_1m = prices.pct_change(21)
+returns_3m = prices.pct_change(63)
+
+macro_returns = macro.pct_change(21)
+
+# =========================
+# ALIGN DATA
+# =========================
+data = pd.concat([returns_1m, returns_3m, macro_returns], axis=1)
+data = data.dropna()
+
+if data.empty:
+    raise ValueError("Merged dataset is empty")
+
+print(f"Latest available data date: {data.index[-1].date()}")
+
+# =========================
+# SIMPLE SCORING (replace later with your RF if needed)
+# =========================
+latest = data.iloc[-1]
+
+scores = {
+    "QQQM": latest["QQQM"],
+    "XLE": latest["XLE"],
+    "XSOE": latest["XSOE"],
+}
+
+sorted_assets = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+top_asset = sorted_assets[0][0]
+second_asset = sorted_assets[1][0]
+
+top_score = sorted_assets[0][1]
+second_score = sorted_assets[1][1]
+
+gap = top_score - second_score
+
+# simple proxy (you can improve later)
+risk_off_strength = float(latest.get("^VIX", 0))
+
+# =========================
+# SAVE OUTPUT CSV (CRITICAL FOR ALERT SYSTEM)
+# =========================
+output = pd.DataFrame([{
+    "signal_date": datetime.now().strftime("%Y-%m-%d"),
+    "top_asset": top_asset,
+    "second_asset": second_asset,
+    "top_score": top_score,
+    "second_score": second_score,
+    "score_gap": gap,
+    "risk_off_strength": risk_off_strength
+}])
+
+output.to_csv("model_c_plus_usd_hyg_short_conviction_latest_recommendation.csv", index=False)
+
+print("Model finished.")
+print(output)
