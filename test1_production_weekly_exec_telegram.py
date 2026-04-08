@@ -20,9 +20,9 @@ def send_telegram(message: str):
         data={"chat_id": CHAT_ID, "text": message},
         timeout=20,
     )
-    print("Telegram response:", response.status_code, response.text)
+    print("Telegram status:", response.status_code)
+    print("Telegram body:", response.text)
     response.raise_for_status()
-
 
 def run_model():
     return {
