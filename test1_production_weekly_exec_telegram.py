@@ -33,18 +33,36 @@ def send_telegram(message: str):
     response.raise_for_status()
 
 
+import subprocess
+import sys
+
 def run_model():
+    script_path = "model_c_plus_usd_hyg_short_conviction.py"
+    csv_path = "model_c_plus_usd_hyg_short_conviction_latest_recommendation.csv"
+
+    result = subprocess.run(
+        [sys.executable, script_path],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    print(result.stdout)
+    if result.stderr:
+        print(result.stderr)
+
+    df = pd.read_csv(csv_path)
+    row = df.iloc[-1]
+
     return {
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "top_asset": "XLE",
-        "second_asset": "QQQM",
-        "top_score": 0.0178,
-        "second_score": 0.0054,
-        "gap": 0.0124,
-        "risk_off_strength": 0.30,
+        "date": str(row["signal_date"])[:10],
+        "top_asset": row["top_asset"],
+        "second_asset": row["second_asset"],
+        "top_score": float(row["top_score"]),
+        "second_score": float(row["second_score"]),
+        "gap": float(row["score_gap"]),
+        "risk_off_strength": float(row["risk_off_strength"]),
     }
-
-
 def load_previous():
     if not os.path.exists(SIGNAL_FILE):
         return None
