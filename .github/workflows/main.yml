@@ -2,7 +2,7 @@ name: Run Rotation Model
 
 on:
   schedule:
-    - cron: "0 * * * *"   # runs every hour
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -20,7 +20,7 @@ jobs:
 
       - name: Install packages
         run: |
-          pip install pandas numpy yfinance scikit-learn requests
+          pip install pandas requests
 
       - name: Run model
         env:
