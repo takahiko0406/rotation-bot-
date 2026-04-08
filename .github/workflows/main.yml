@@ -3,7 +3,7 @@ name: Run Rotation Model
 on:
   schedule:
     - cron: "0 * * * *"   # runs every hour
-  workflow_dispatch:       # allow manual run
+  workflow_dispatch:
 
 jobs:
   run-model:
@@ -23,5 +23,8 @@ jobs:
           pip install pandas numpy yfinance scikit-learn requests
 
       - name: Run model
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
           python test1_production_weekly_exec_telegram.py
