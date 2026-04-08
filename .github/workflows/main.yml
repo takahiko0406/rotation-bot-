@@ -1,0 +1,27 @@
+name: Run Rotation Model
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # runs every hour
+  workflow_dispatch:       # allow manual run
+
+jobs:
+  run-model:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install packages
+        run: |
+          pip install pandas numpy yfinance scikit-learn requests
+
+      - name: Run model
+        run: |
+          python test1_production_weekly_exec_telegram.py
