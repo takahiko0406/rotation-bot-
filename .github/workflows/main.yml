@@ -4,7 +4,7 @@ import yfinance as yf
 import time
 from datetime import datetime
 
-# =========================
+# ========================
 # SAFE DOWNLOAD (CRITICAL FIX)
 # =========================
 def safe_download(tickers, start=None, end=None):
