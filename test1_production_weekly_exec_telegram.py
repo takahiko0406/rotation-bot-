@@ -2,11 +2,7 @@ import os
 from datetime import datetime
 import requests
 import pandas as pd
-# test    if changed:
-        send_telegram(message)
-        print("Telegram sent.")
-    else:
-        print("No change.")
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 SIGNAL_FILE = "latest_signal.csv"
@@ -27,6 +23,7 @@ def send_telegram(message: str):
     print("Telegram status:", response.status_code)
     print("Telegram body:", response.text)
     response.raise_for_status()
+
 
 def run_model():
     return {
@@ -74,8 +71,8 @@ Score gap: {result['gap']}
 Changed: {'YES' if changed else 'NO'}
 """
 
-send_telegram(message)
-print("Telegram sent (forced).")
+    send_telegram(message)
+    print("Telegram sent (forced).")
 
     save_signal(result)
     print("Done.")
