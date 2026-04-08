@@ -2,7 +2,7 @@ import os
 from datetime import datetime
 import requests
 import pandas as pd
-
+#
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 SIGNAL_FILE = "latest_signal.csv"
