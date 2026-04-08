@@ -3,8 +3,8 @@ import pandas as pd
 import requests
 import os
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
 
 # =========================
@@ -14,12 +14,14 @@ def run_model():
     result = subprocess.run(
         ["python", "model_c_plus_usd_hyg_short_conviction.py"],
         capture_output=True,
-        text=True,
-        check=True
+        text=True
     )
 
     print("MODEL STDOUT:\n", result.stdout)
     print("MODEL STDERR:\n", result.stderr)
+
+    if result.returncode != 0:
+        raise Exception("Model execution failed")
 
     return result
 
@@ -66,17 +68,18 @@ def load_previous():
 def should_alert(current, previous):
     score_gap = current["top_score"] - current["second_score"]
 
-    # alert only if STRONG signal AND change
-    if score_gap > 0.02 and current["top"] != previous["top"]:
-        return True
-
-    return False
+    # only alert if STRONG + CHANGE
+    return score_gap > 0.02 and current["top"] != previous["top"]
 
 
 # =========================
 # SEND TELEGRAM
 # =========================
 def send_telegram(message):
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Missing TELEGRAM credentials")
+        return
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
     payload = {
@@ -84,7 +87,9 @@ def send_telegram(message):
         "text": message
     }
 
-    requests.post(url, json=payload)
+    response = requests.post(url, json=payload)
+
+    print("Telegram status:", response.status_code)
 
 
 # =========================
@@ -98,9 +103,12 @@ def main():
     current = load_current()
     previous = load_previous()
 
+    print("Current:", current)
+    print("Previous:", previous)
+
     if should_alert(current, previous):
-        msg = f"""
-🚨 ROTATION ALERT 🚨
+
+        msg = f"""🚨 ROTATION ALERT 🚨
 
 Date: {current['date']}
 
@@ -111,8 +119,10 @@ Score gap: {current['top_score'] - current['second_score']:.4f}
 
 Previous Top: {previous['top']}
 """
+
         send_telegram(msg)
         print("ALERT SENT")
+
     else:
         print("No strong signal → no alert")
 
