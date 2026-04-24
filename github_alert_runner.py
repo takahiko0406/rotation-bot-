@@ -5,10 +5,12 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-CSV = "model_c_plus_usd_hyg_short_conviction_latest_recommendation.csv"
+# Use TQQQ overlay model output
+CSV = "model_c_plus_usd_hyg_short_conviction_tqqq_tiered_overlay_latest_recommendation.csv"
 STATE_FILE = Path("last_alert_state.json")
 
 BIG_TURNOVER_THRESHOLD = 0.50
+
 
 def send_telegram(message: str):
     bot_token = os.environ["BOT_TOKEN"]
@@ -23,6 +25,7 @@ def send_telegram(message: str):
     print(r.status_code, r.text)
     r.raise_for_status()
 
+
 def load_prev():
     if not STATE_FILE.exists():
         return None
@@ -31,9 +34,11 @@ def load_prev():
     except Exception:
         return None
 
+
 def calc_turnover(prev_weights, curr_weights):
     assets = set(prev_weights.keys()) | set(curr_weights.keys())
     return sum(abs(curr_weights.get(a, 0.0) - prev_weights.get(a, 0.0)) for a in assets)
+
 
 def main():
     df = pd.read_csv(CSV)
@@ -45,11 +50,19 @@ def main():
         "XSOE": float(row.get("adj_pred_XSOE", 0.0)),
     }
 
-    weights = {
-        "QQQM": float(row.get("QQQM", row.get("w_QQQM", 0.0))),
-        "XLE": float(row.get("XLE", row.get("w_XLE", 0.0))),
-        "XSOE": float(row.get("XSOE", row.get("w_XSOE", 0.0))),
-        "BIL": float(row.get("BIL", row.get("w_BIL", 0.0))),
+    signal_weights = {
+        "QQQM": float(row.get("signal_w_QQQM", 0.0)),
+        "XLE": float(row.get("signal_w_XLE", 0.0)),
+        "XSOE": float(row.get("signal_w_XSOE", 0.0)),
+        "BIL": float(row.get("signal_w_BIL", 0.0)),
+    }
+
+    exec_weights = {
+        "TQQQ": float(row.get("exec_w_TQQQ", 0.0)),
+        "QQQM": float(row.get("exec_w_QQQM", 0.0)),
+        "XLE": float(row.get("exec_w_XLE", 0.0)),
+        "XSOE": float(row.get("exec_w_XSOE", 0.0)),
+        "BIL": float(row.get("exec_w_BIL", 0.0)),
     }
 
     curr = {
@@ -63,7 +76,8 @@ def main():
         "growth": float(row["growth_strength"]),
         "soxx": float(row["soxx_strength"]),
         "preds": preds,
-        "weights": weights,
+        "signal_weights": signal_weights,
+        "exec_weights": exec_weights,
     }
 
     prev = load_prev()
@@ -76,11 +90,10 @@ def main():
         or curr["risk_off"] >= 1.0
     )
 
-    # TQQQ danger proxy:
-    # If QQQM is top, you may be tempted to use TQQQ.
-    # Alert when QQQM regime becomes unsafe.
+    tqqq_now_on = exec_weights["TQQQ"] > 0
+
     tqqq_danger = (
-        curr["top"] == "QQQM"
+        tqqq_now_on
         and (
             curr["growth"] < 0
             or curr["soxx"] < 0
@@ -93,7 +106,7 @@ def main():
         turnover = 999.0
     else:
         rotation_change = prev.get("top") != curr["top"]
-        turnover = calc_turnover(prev.get("weights", {}), curr["weights"])
+        turnover = calc_turnover(prev.get("exec_weights", {}), curr["exec_weights"])
 
     big_allocation_change = turnover >= BIG_TURNOVER_THRESHOLD
 
@@ -141,16 +154,25 @@ QQQM: {preds['QQQM']:.4f}
 XLE:  {preds['XLE']:.4f}
 XSOE: {preds['XSOE']:.4f}
 
-Weights:
-QQQM: {weights['QQQM']:.0%}
-XLE:  {weights['XLE']:.0%}
-XSOE: {weights['XSOE']:.0%}
-BIL:  {weights['BIL']:.0%}
+Signal weights:
+QQQM: {signal_weights['QQQM']:.0%}
+XLE:  {signal_weights['XLE']:.0%}
+XSOE: {signal_weights['XSOE']:.0%}
+BIL:  {signal_weights['BIL']:.0%}
+
+Executed weights:
+TQQQ: {exec_weights['TQQQ']:.0%}
+QQQM: {exec_weights['QQQM']:.0%}
+XLE:  {exec_weights['XLE']:.0%}
+XSOE: {exec_weights['XSOE']:.0%}
+BIL:  {exec_weights['BIL']:.0%}
 
 Risk:
 Risk-off: {curr['risk_off']:.3f}
 Growth: {curr['growth']:.3f}
 SOXX: {curr['soxx']:.3f}
+TQQQ danger: {tqqq_danger}
+Exit signal: {exit_signal}
 Turnover: {turnover:.2f}
 """.strip()
 
@@ -159,6 +181,7 @@ Turnover: {turnover:.2f}
         print("No alert.")
 
     STATE_FILE.write_text(json.dumps(curr, indent=2, default=float))
+
 
 if __name__ == "__main__":
     main()
