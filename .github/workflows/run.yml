@@ -12,9 +12,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
@@ -31,28 +33,26 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: |
-          python - <<'PY'
-          import os, pandas as pd, requests
+          python - <<EOF
+import os
+import pandas as pd
+import requests
 
-          df = pd.read_csv("model_c_plus_usd_hyg_short_conviction_latest_recommendation.csv")
-          row = df.iloc[-1]
+df = pd.read_csv("model_c_plus_usd_hyg_short_conviction_latest_recommendation.csv")
+row = df.iloc[-1]
 
-          msg = f"""
-🚨 Rotation Signal
+msg = f"""
+Rotation Signal
 
 Top: {row['top_asset']}
 Second: {row['second_asset']}
 
-Score: {row['top_score']:.4f}
-Gap: {row['score_gap']:.4f}
-
-XLE: {row.get('signal_w_XLE',0):.0%}
-QQQM: {row.get('signal_w_QQQM',0):.0%}
-XSOE: {row.get('signal_w_XSOE',0):.0%}
+Top score: {float(row['top_score']):.4f}
+Gap: {float(row['score_gap']):.4f}
 """
 
-          requests.post(
-              f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
-              data={"chat_id": os.environ["CHAT_ID"], "text": msg}
-          )
-          PY
+requests.post(
+    f"https://api.telegram.org/bot{os.environ['BOT_TOKEN']}/sendMessage",
+    data={"chat_id": os.environ["CHAT_ID"], "text": msg}
+)
+EOF
