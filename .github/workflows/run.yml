@@ -2,7 +2,8 @@ name: Rotation Bot
 
 on:
   schedule:
-    - cron: "30 22 * * *"
+    - cron: "30 22 * * *"   # 07:30 JST (after US close → main signal)
+    - cron: "30 13 * * *"   # 22:30 JST (before US open → risk check)
   workflow_dispatch:
 
 permissions:
