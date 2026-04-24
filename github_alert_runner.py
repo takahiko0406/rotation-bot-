@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-# Use TQQQ overlay model output
+# ✅ MUST match TQQQ model output file
 CSV = "model_c_plus_usd_hyg_short_conviction_tqqq_tiered_overlay_latest_recommendation.csv"
 STATE_FILE = Path("last_alert_state.json")
 
@@ -50,6 +50,7 @@ def main():
         "XSOE": float(row.get("adj_pred_XSOE", 0.0)),
     }
 
+    # ✅ SIGNAL (model decision)
     signal_weights = {
         "QQQM": float(row.get("signal_w_QQQM", 0.0)),
         "XLE": float(row.get("signal_w_XLE", 0.0)),
@@ -57,6 +58,7 @@ def main():
         "BIL": float(row.get("signal_w_BIL", 0.0)),
     }
 
+    # ✅ EXECUTION (with TQQQ)
     exec_weights = {
         "TQQQ": float(row.get("exec_w_TQQQ", 0.0)),
         "QQQM": float(row.get("exec_w_QQQM", 0.0)),
