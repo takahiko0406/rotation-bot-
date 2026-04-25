@@ -1,4 +1,4 @@
-
+def run_script(script_path: Path, script_name: str) -> None:
     write_log(f"Starting {script_name}: {script_path}")
 
     result = subprocess.run(
