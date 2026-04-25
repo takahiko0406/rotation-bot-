@@ -1,3 +1,5 @@
-fastapi
-uvicorn[standard]
-xlwings
+pandas
+numpy
+yfinance
+requests
+scikit-learn
