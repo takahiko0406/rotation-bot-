@@ -33,7 +33,7 @@ except ImportError:
 # ============================================================
 # SETTINGS
 # ============================================================
-WORKDIR = Path("C:/Users/81901/Downloads")
+WORKDIR = Path(__file__).resolve().parent
 CSV = WORKDIR / "model_c_plus_hybrid_multi_asset_defensive_latest_recommendation.csv"
 STATE_FILE = WORKDIR / "live_alert_state_hybrid_multi_defensive.json"
 LOG_FILE = WORKDIR / "live_alert_log_hybrid_multi_defensive.csv"
