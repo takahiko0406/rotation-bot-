@@ -21,7 +21,7 @@ jobs:
 
       - name: Install packages
         run: |
-          pip install pandas numpy yfinance requests
+          pip install pandas numpy yfinance requests scikit-learn
 
       - name: Run model + alert
         run: python run_model_and_alert.py
