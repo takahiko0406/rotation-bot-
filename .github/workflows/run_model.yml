@@ -1,4 +1,4 @@
-name: Run Model
+name: Run Model And Telegram Alert
 
 on:
   schedule:
@@ -22,7 +22,10 @@ jobs:
 
       - name: Install packages
         run: |
-          pip install pandas numpy yfinance requests scikit-learn
+          pip install -r requirements.txt
 
       - name: Run model + alert
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python run_model_and_alert.py
