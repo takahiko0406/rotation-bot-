@@ -1,20 +1,16 @@
 """
-Live Telegram alert system for the HYBRID_MULTI_ASSET_DEFENSIVE model.
+Live Telegram alert system for HYBRID_MULTI_ASSET_DEFENSIVE model
+with TECH REGIME DETECTION.
 
-Run after your main model script creates:
+Run after:
+    model_c_plus_hybrid_multi_asset_defensive_compare.py
+
+Required CSV:
     model_c_plus_hybrid_multi_asset_defensive_latest_recommendation.csv
 
-Example run:
-    C:/Users/81901/venv/Scripts/python.exe C:/Users/81901/Downloads/live_model_telegram_alert_v2.py
-
-Telegram setup:
-    Set environment variables BOT_TOKEN and CHAT_ID.
-
-Windows PowerShell example:
-    setx BOT_TOKEN "123456:ABC..."
-    setx CHAT_ID "123456789"
-
-After setx, close and reopen terminal.
+Telegram env variables:
+    BOT_TOKEN
+    CHAT_ID
 """
 
 import json
@@ -38,17 +34,16 @@ CSV = WORKDIR / "model_c_plus_hybrid_multi_asset_defensive_latest_recommendation
 STATE_FILE = WORKDIR / "live_alert_state_hybrid_multi_defensive.json"
 LOG_FILE = WORKDIR / "live_alert_log_hybrid_multi_defensive.csv"
 
-# Alert thresholds
-BIG_TURNOVER_THRESHOLD = 0.50       # 50% total allocation change
-SCORE_GAP_WEAK_THRESHOLD = 0.003    # very weak conviction
-RISK_OFF_EXIT_THRESHOLD = 1.50      # strong risk-off -> exit alert
-RISK_OFF_WARN_THRESHOLD = 0.75      # warning level
+BIG_TURNOVER_THRESHOLD = 0.50
+SCORE_GAP_WEAK_THRESHOLD = 0.003
+RISK_OFF_EXIT_THRESHOLD = 1.50
+RISK_OFF_WARN_THRESHOLD = 0.75
 TQQQ_DANGER_RISK_OFF = 0.30
 
-# Model assets
 SIGNAL_ASSETS = ["QQQM", "XLE", "XSOE", "XLI", "XLB", "BIL"]
 EXEC_ASSETS = ["TQQQ", "ERX", "UXI", "QQQM", "XLE", "XSOE", "XLI", "XLB", "BIL"]
 PRED_ASSETS = ["QQQM", "XLE", "XSOE", "XLI", "XLB"]
+
 REGIME_FIELDS = [
     "growth_strength",
     "soxx_strength",
@@ -64,7 +59,7 @@ REGIME_FIELDS = [
 
 
 # ============================================================
-# HELPERS
+# BASIC HELPERS
 # ============================================================
 def safe_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -85,9 +80,7 @@ def fmt_weight_dict(weights: Dict[str, float], assets) -> str:
         w = weights.get(asset, 0.0)
         if abs(w) > 1e-9:
             lines.append(f"{asset}: {pct(w)}")
-    if not lines:
-        return "None"
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else "None"
 
 
 def calc_turnover(prev_weights: Dict[str, float], curr_weights: Dict[str, float]) -> float:
@@ -108,70 +101,103 @@ def save_state(curr: Dict[str, Any]) -> None:
     STATE_FILE.write_text(json.dumps(curr, indent=2), encoding="utf-8")
 
 
-def append_log(curr: Dict[str, Any], reason: str, turnover: float, send_alert: bool) -> None:
-    row = {
-        "run_time": pd.Timestamp.now(),
-        "signal_date": curr.get("signal_date"),
-        "latest_data_date": curr.get("latest_data_date"),
-        "top": curr.get("top"),
-        "second": curr.get("second"),
-        "top_score": curr.get("top_score"),
-        "second_score": curr.get("second_score"),
-        "score_gap": curr.get("score_gap"),
-        "reason": reason,
-        "turnover_vs_prev": turnover,
-        "send_alert": send_alert,
-        "exit_signal": curr.get("exit_signal"),
-        "risk_warning": curr.get("risk_warning"),
-        "leverage_danger": curr.get("leverage_danger"),
-        "tqqq_weight": curr["exec_weights"].get("TQQQ", 0.0),
-        "erx_weight": curr["exec_weights"].get("ERX", 0.0),
-        "uxi_weight": curr["exec_weights"].get("UXI", 0.0),
-        "bil_weight": curr["exec_weights"].get("BIL", 0.0),
-    }
-    for k, v in curr.get("regime", {}).items():
-        row[k] = v
-    df = pd.DataFrame([row])
-    if LOG_FILE.exists():
-        df.to_csv(LOG_FILE, mode="a", index=False, header=False)
-    else:
-        df.to_csv(LOG_FILE, index=False)
+# ============================================================
+# TECH REGIME DETECTOR
+# ============================================================
+def classify_tech_regime(
+    growth_strength: float,
+    soxx_strength: float,
+    risk_off_strength: float,
+    top_asset: str,
+    score_gap: float,
+    tqqq_weight: float = 0.0,
+) -> Dict[str, Any]:
+    """
+    Detect whether the tech / TQQQ regime is still valid.
 
+    STRONG_TECH:
+        growth + semis strong, risk-off low
 
-def send_telegram(message: str) -> None:
-    bot_token = os.environ.get("BOT_TOKEN")
-    chat_id = os.environ.get("CHAT_ID")
+    WEAKENING_TECH:
+        tech still okay, but conviction/risk is weakening
 
-    if not bot_token or not chat_id:
-        print("Telegram not configured. Set BOT_TOKEN and CHAT_ID. Skipping Telegram alert.")
-        return
+    DELEVERAGE_TECH:
+        do not necessarily exit tech, but reduce TQQQ
 
-    if requests is None:
-        raise ImportError("requests is not installed. Run: pip install requests")
+    EXIT_TECH:
+        tech regime has ended or model leadership changed
+    """
 
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    response = requests.post(
-        url,
-        data={"chat_id": chat_id, "text": message},
-        timeout=20,
+    tech_score = (
+        0.40 * growth_strength
+        + 0.40 * soxx_strength
+        - 0.20 * risk_off_strength
     )
-    print("Telegram response:", response.status_code, response.text)
-    response.raise_for_status()
+
+    hard_exit = (
+        soxx_strength < 0
+        or risk_off_strength >= 1.5
+        or top_asset != "QQQM"
+    )
+
+    soft_exit = (
+        growth_strength < 1.0
+        or score_gap < 0.010
+        or risk_off_strength > 0.5
+    )
+
+    leverage_danger = (
+        tqqq_weight > 0
+        and (
+            growth_strength < 0.5
+            or soxx_strength < 0.5
+            or risk_off_strength > 0.5
+        )
+    )
+
+    if hard_exit:
+        regime = "EXIT_TECH"
+        action = "Exit TQQQ. Follow new top asset or move QQQM sleeve to QQQM/cash."
+    elif leverage_danger:
+        regime = "DELEVERAGE_TECH"
+        action = "Reduce TQQQ. Convert leveraged tech exposure into QQQM."
+    elif soft_exit:
+        regime = "WEAKENING_TECH"
+        action = "Keep tech, but reduce leverage and watch next signal."
+    elif tech_score >= 2.0:
+        regime = "STRONG_TECH"
+        action = "Tech regime still strong. TQQQ exposure allowed."
+    elif tech_score >= 1.0:
+        regime = "MODERATE_TECH"
+        action = "Tech still positive, but avoid increasing leverage."
+    else:
+        regime = "NO_TECH_EDGE"
+        action = "No strong tech edge. Avoid TQQQ."
+
+    return {
+        "tech_score": round(float(tech_score), 3),
+        "tech_regime": regime,
+        "tech_action": action,
+        "tech_hard_exit": bool(hard_exit),
+        "tech_soft_exit": bool(soft_exit),
+        "tech_leverage_danger": bool(leverage_danger),
+    }
 
 
 # ============================================================
-# MAIN LOGIC
+# READ LATEST MODEL OUTPUT
 # ============================================================
 def read_latest_signal() -> Dict[str, Any]:
     if not CSV.exists():
         raise FileNotFoundError(
             f"Cannot find latest recommendation file:\n{CSV}\n"
-            "Run your production model first."
+            "Run your model script first."
         )
 
     df = pd.read_csv(CSV)
     if df.empty:
         raise ValueError(f"Latest recommendation CSV is empty: {CSV}")
+
     row = df.iloc[-1]
 
     preds = {a: safe_float(row.get(f"adj_pred_{a}", 0.0)) for a in PRED_ASSETS}
@@ -194,9 +220,23 @@ def read_latest_signal() -> Dict[str, Any]:
         "exec_weights": exec_weights,
         "regime": regime,
     }
+
+    tech_status = classify_tech_regime(
+        growth_strength=regime.get("growth_strength", 0.0),
+        soxx_strength=regime.get("soxx_strength", 0.0),
+        risk_off_strength=regime.get("risk_off_strength", 0.0),
+        top_asset=curr["top"],
+        score_gap=curr["score_gap"],
+        tqqq_weight=exec_weights.get("TQQQ", 0.0),
+    )
+
+    curr.update(tech_status)
     return curr
 
 
+# ============================================================
+# ALERT CLASSIFIER
+# ============================================================
 def classify_alert(curr: Dict[str, Any], prev: Optional[Dict[str, Any]]):
     preds = curr["preds"]
     exec_weights = curr["exec_weights"]
@@ -205,16 +245,15 @@ def classify_alert(curr: Dict[str, Any], prev: Optional[Dict[str, Any]]):
     all_negative = all(v <= 0 for v in preds.values())
     top_score = curr["top_score"]
     score_gap = curr["score_gap"]
+
     risk_off = regime.get("risk_off_strength", 0.0)
     growth = regime.get("growth_strength", 0.0)
     soxx = regime.get("soxx_strength", 0.0)
 
-    leveraged_weight = exec_weights.get("TQQQ", 0.0) + exec_weights.get("ERX", 0.0) + exec_weights.get("UXI", 0.0)
     tqqq_now_on = exec_weights.get("TQQQ", 0.0) > 0
     erx_now_on = exec_weights.get("ERX", 0.0) > 0
     uxi_now_on = exec_weights.get("UXI", 0.0) > 0
 
-    # Crash / exit signal
     exit_signal = (
         top_score <= 0
         or all_negative
@@ -222,10 +261,8 @@ def classify_alert(curr: Dict[str, Any], prev: Optional[Dict[str, Any]]):
         or exec_weights.get("BIL", 0.0) >= 0.99
     )
 
-    # Warning signal, not necessarily exit
     risk_warning = risk_off >= RISK_OFF_WARN_THRESHOLD
 
-    # Leverage danger checks
     tqqq_danger = (
         tqqq_now_on
         and (
@@ -234,9 +271,16 @@ def classify_alert(curr: Dict[str, Any], prev: Optional[Dict[str, Any]]):
             or risk_off > TQQQ_DANGER_RISK_OFF
         )
     )
+
     erx_danger = erx_now_on and risk_off > 0.75
     uxi_danger = uxi_now_on and risk_off > 0.75
-    leverage_danger = tqqq_danger or erx_danger or uxi_danger
+
+    leverage_danger = (
+        tqqq_danger
+        or erx_danger
+        or uxi_danger
+        or curr.get("tech_leverage_danger", False)
+    )
 
     weak_conviction = score_gap < SCORE_GAP_WEAK_THRESHOLD
 
@@ -253,37 +297,138 @@ def classify_alert(curr: Dict[str, Any], prev: Optional[Dict[str, Any]]):
         reason = "NO ALERT"
         send_alert = False
 
+        previous_tech_regime = prev.get("tech_regime", "")
+        current_tech_regime = curr.get("tech_regime", "")
+
         if exit_signal and not prev.get("exit_signal", False):
             send_alert = True
             reason = "EXIT / CASH DEFENSE"
+
+        elif current_tech_regime == "EXIT_TECH" and previous_tech_regime != "EXIT_TECH":
+            send_alert = True
+            reason = "TECH REGIME EXIT"
+
+        elif current_tech_regime == "DELEVERAGE_TECH" and previous_tech_regime != "DELEVERAGE_TECH":
+            send_alert = True
+            reason = "TECH DELEVERAGE"
+
+        elif current_tech_regime == "WEAKENING_TECH" and previous_tech_regime not in ["WEAKENING_TECH", "DELEVERAGE_TECH"]:
+            send_alert = True
+            reason = "TECH REGIME WEAKENING"
+
         elif leverage_danger and not prev.get("leverage_danger", False):
             send_alert = True
             reason = "LEVERAGE DANGER"
+
         elif rotation_change:
             send_alert = True
             reason = "ROTATION CHANGE"
+
         elif allocation_change:
             send_alert = True
             reason = "BIG ALLOCATION CHANGE"
+
         elif risk_warning and not prev.get("risk_warning", False):
             send_alert = True
             reason = "RISK WARNING"
+
         elif weak_conviction and not prev.get("weak_conviction", False):
             send_alert = True
             reason = "WEAK CONVICTION"
 
-    curr["exit_signal"] = exit_signal
-    curr["risk_warning"] = risk_warning
-    curr["leverage_danger"] = leverage_danger
-    curr["tqqq_danger"] = tqqq_danger
-    curr["erx_danger"] = erx_danger
-    curr["uxi_danger"] = uxi_danger
-    curr["weak_conviction"] = weak_conviction
-    curr["turnover_vs_prev"] = turnover
+    curr["exit_signal"] = bool(exit_signal)
+    curr["risk_warning"] = bool(risk_warning)
+    curr["leverage_danger"] = bool(leverage_danger)
+    curr["tqqq_danger"] = bool(tqqq_danger)
+    curr["erx_danger"] = bool(erx_danger)
+    curr["uxi_danger"] = bool(uxi_danger)
+    curr["weak_conviction"] = bool(weak_conviction)
+    curr["turnover_vs_prev"] = float(turnover)
 
     return send_alert, reason, turnover
 
 
+# ============================================================
+# LOGGING
+# ============================================================
+def append_log(curr: Dict[str, Any], reason: str, turnover: float, send_alert: bool) -> None:
+    row = {
+        "run_time": pd.Timestamp.now(),
+        "signal_date": curr.get("signal_date"),
+        "latest_data_date": curr.get("latest_data_date"),
+        "top": curr.get("top"),
+        "second": curr.get("second"),
+        "top_score": curr.get("top_score"),
+        "second_score": curr.get("second_score"),
+        "score_gap": curr.get("score_gap"),
+        "reason": reason,
+        "turnover_vs_prev": turnover,
+        "send_alert": send_alert,
+
+        "tech_score": curr.get("tech_score"),
+        "tech_regime": curr.get("tech_regime"),
+        "tech_action": curr.get("tech_action"),
+        "tech_hard_exit": curr.get("tech_hard_exit"),
+        "tech_soft_exit": curr.get("tech_soft_exit"),
+        "tech_leverage_danger": curr.get("tech_leverage_danger"),
+
+        "exit_signal": curr.get("exit_signal"),
+        "risk_warning": curr.get("risk_warning"),
+        "leverage_danger": curr.get("leverage_danger"),
+        "tqqq_danger": curr.get("tqqq_danger"),
+        "erx_danger": curr.get("erx_danger"),
+        "uxi_danger": curr.get("uxi_danger"),
+        "weak_conviction": curr.get("weak_conviction"),
+
+        "tqqq_weight": curr["exec_weights"].get("TQQQ", 0.0),
+        "erx_weight": curr["exec_weights"].get("ERX", 0.0),
+        "uxi_weight": curr["exec_weights"].get("UXI", 0.0),
+        "bil_weight": curr["exec_weights"].get("BIL", 0.0),
+    }
+
+    for k, v in curr.get("regime", {}).items():
+        row[k] = v
+
+    df = pd.DataFrame([row])
+
+    if LOG_FILE.exists():
+        df.to_csv(LOG_FILE, mode="a", index=False, header=False)
+    else:
+        df.to_csv(LOG_FILE, index=False)
+
+
+# ============================================================
+# TELEGRAM
+# ============================================================
+def send_telegram(message: str) -> None:
+    bot_token = os.environ.get("BOT_TOKEN")
+    chat_id = os.environ.get("CHAT_ID")
+
+    if not bot_token or not chat_id:
+        print("Telegram not configured. Set BOT_TOKEN and CHAT_ID. Skipping Telegram alert.")
+        return
+
+    if requests is None:
+        raise ImportError("requests is not installed. Run: pip install requests")
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+
+    response = requests.post(
+        url,
+        data={
+            "chat_id": chat_id,
+            "text": message,
+        },
+        timeout=20,
+    )
+
+    print("Telegram response:", response.status_code, response.text)
+    response.raise_for_status()
+
+
+# ============================================================
+# MESSAGE BUILDER
+# ============================================================
 def build_message(curr: Dict[str, Any], reason: str, turnover: float) -> str:
     preds = curr["preds"]
     signal_weights = curr["signal_weights"]
@@ -303,16 +448,35 @@ Second score: {curr['second_score']:.4f}
 Gap: {curr['score_gap']:.4f}
 Overlay fraction: {pct(curr['overlay_fraction'])}
 
-Adjusted predictions:
+========================
+TECH REGIME
+========================
+Tech regime: {curr.get('tech_regime')}
+Tech score: {curr.get('tech_score')}
+Action: {curr.get('tech_action')}
+
+Tech hard exit: {curr.get('tech_hard_exit')}
+Tech soft exit: {curr.get('tech_soft_exit')}
+Tech leverage danger: {curr.get('tech_leverage_danger')}
+
+========================
+ADJUSTED PREDICTIONS
+========================
 {chr(10).join([f'{a}: {preds.get(a, 0.0):.4f}' for a in PRED_ASSETS])}
 
-Signal weights:
+========================
+SIGNAL WEIGHTS
+========================
 {fmt_weight_dict(signal_weights, SIGNAL_ASSETS)}
 
-Executed weights:
+========================
+EXECUTED WEIGHTS
+========================
 {fmt_weight_dict(exec_weights, EXEC_ASSETS)}
 
-Regime:
+========================
+REGIME DATA
+========================
 Growth: {regime.get('growth_strength', 0.0):.3f}
 SOXX: {regime.get('soxx_strength', 0.0):.3f}
 Risk-off: {regime.get('risk_off_strength', 0.0):.3f}
@@ -320,10 +484,13 @@ War: {regime.get('war_strength', 0.0):.3f}
 Industrial: {regime.get('industrial_strength', 0.0):.3f}
 Materials: {regime.get('materials_strength', 0.0):.3f}
 Copper: {regime.get('copper_strength', 0.0):.3f}
+Copper 3M: {regime.get('copper_3m_strength', 0.0):.3f}
 USD 3M: {regime.get('usd_3m_strength', 0.0):.3f}
 Credit: {regime.get('credit_strength', 0.0):.3f}
 
-Risk flags:
+========================
+RISK FLAGS
+========================
 Exit signal: {curr['exit_signal']}
 Risk warning: {curr['risk_warning']}
 Leverage danger: {curr['leverage_danger']}
@@ -333,9 +500,13 @@ UXI danger: {curr['uxi_danger']}
 Weak conviction: {curr['weak_conviction']}
 Turnover vs previous: {turnover:.2f}
 """.strip()
+
     return msg
 
 
+# ============================================================
+# PRINT SUMMARY
+# ============================================================
 def print_signal(curr: Dict[str, Any], reason: str, turnover: float, send_alert_flag: bool) -> None:
     print("\n=== LIVE MODEL ALERT CHECK ===")
     print(f"Signal date: {curr['signal_date']}")
@@ -344,19 +515,41 @@ def print_signal(curr: Dict[str, Any], reason: str, turnover: float, send_alert_
     print(f"Reason: {reason}")
     print(f"Send alert: {send_alert_flag}")
     print(f"Turnover vs previous: {turnover:.2f}")
+
+    print("\n=== TECH REGIME STATUS ===")
+    print(f"Tech regime: {curr.get('tech_regime')}")
+    print(f"Tech score: {curr.get('tech_score')}")
+    print(f"Action: {curr.get('tech_action')}")
+    print(f"Hard exit: {curr.get('tech_hard_exit')}")
+    print(f"Soft exit: {curr.get('tech_soft_exit')}")
+    print(f"Leverage danger: {curr.get('tech_leverage_danger')}")
+
     print("\nExecuted weights:")
     print(fmt_weight_dict(curr["exec_weights"], EXEC_ASSETS))
+
     print("\nRisk flags:")
-    for k in ["exit_signal", "risk_warning", "leverage_danger", "tqqq_danger", "erx_danger", "uxi_danger", "weak_conviction"]:
+    for k in [
+        "exit_signal",
+        "risk_warning",
+        "leverage_danger",
+        "tqqq_danger",
+        "erx_danger",
+        "uxi_danger",
+        "weak_conviction",
+    ]:
         print(f"  {k}: {curr.get(k)}")
 
 
+# ============================================================
+# MAIN
+# ============================================================
 def main() -> None:
     print("Current working directory:", os.getcwd())
     print("Monitor workdir:", WORKDIR)
 
     curr = read_latest_signal()
     prev = load_prev()
+
     send_alert_flag, reason, turnover = classify_alert(curr, prev)
 
     print_signal(curr, reason, turnover, send_alert_flag)
