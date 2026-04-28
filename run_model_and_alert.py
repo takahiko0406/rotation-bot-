@@ -5,7 +5,7 @@ from pathlib import Path
 from datetime import datetime
 
 WORKDIR = Path(__file__).resolve().parent
-MODEL_SCRIPT = WORKDIR / "model_c_plus_hybrid_multi_asset_defensive_compare.py"
+MODEL_SCRIPT = WORKDIR / "model_c_plus_current_best_with_divergence_alerts.py"
 ALERT_SCRIPT = WORKDIR / "live_model_telegram_alert_v2.py"
 LOG_FILE = WORKDIR / "run_model_and_alert_log.txt"
 
