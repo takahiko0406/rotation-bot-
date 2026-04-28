@@ -30,9 +30,9 @@ except ImportError:
 # SETTINGS
 # ============================================================
 WORKDIR = Path(__file__).resolve().parent
-CSV = WORKDIR / "model_c_plus_hybrid_multi_asset_defensive_latest_recommendation.csv"
-STATE_FILE = WORKDIR / "live_alert_state_hybrid_multi_defensive.json"
-LOG_FILE = WORKDIR / "live_alert_log_hybrid_multi_defensive.csv"
+CSV = WORKDIR / "model_c_plus_current_best_with_divergence_alerts_latest_recommendation.csv"
+STATE_FILE = WORKDIR / "live_alert_state_current_best_divergence.json"
+LOG_FILE = WORKDIR / "live_alert_log_current_best_divergence.csv"
 
 BIG_TURNOVER_THRESHOLD = 0.50
 SCORE_GAP_WEAK_THRESHOLD = 0.003
