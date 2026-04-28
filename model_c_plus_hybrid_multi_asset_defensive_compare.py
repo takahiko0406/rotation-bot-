@@ -17,6 +17,8 @@ print("Current working directory:", os.getcwd())
 # - Adds a V2 overlay test:
 #       V1 = original XLI/XLB overlay
 #       V2 = stricter industrial regime classifier to reduce false signals
+# - Adds divergence/crash detector risk layer:
+#       detects tech-only rallies and scales down TQQQ before full risk-off
 # ============================================================
 
 # ============================================================
@@ -59,6 +61,55 @@ rf_params = {
 overlay_scale = 0.002
 risk_off_cash_threshold = 0.01
 zscore_window = 252
+
+# ============================================================
+# CONDITIONAL DIVERGENCE + SOXX BREAKDOWN DEFENSE SETTINGS
+# ============================================================
+# Key upgrade vs pure divergence defense:
+#   Divergence alone is NOT a sell signal. Your grid search proved that the
+#   best profile was no defense because tech-only rallies can keep running.
+#
+#   This version only reduces TQQQ when BOTH are true:
+#     1) Tech/real-economy divergence is high
+#     2) SOXX/QQQM short-term momentum starts breaking
+#
+# That makes it an early crash detector, not an anti-momentum rule.
+use_conditional_breakdown_defense = False
+
+conditional_breakdown_rules = {
+    "watch": {
+        "divergence_min": 2.75,
+        "breakdown_score_min": 1.0,
+        "risk_off_min": -0.25,
+        "tqqq_multiplier": 0.90,
+        "cash_buffer": 0.00,
+    },
+    "warning": {
+        "divergence_min": 3.00,
+        "breakdown_score_min": 2.0,
+        "risk_off_min": 0.00,
+        "tqqq_multiplier": 0.65,
+        "cash_buffer": 0.10,
+    },
+    "danger": {
+        "divergence_min": 3.25,
+        "breakdown_score_min": 3.0,
+        "risk_off_min": 0.25,
+        "tqqq_multiplier": 0.35,
+        "cash_buffer": 0.25,
+    },
+}
+
+# Component thresholds used to calculate breakdown_score.
+# Example: SOXX 5-day return below -3% counts as one breakdown point.
+breakdown_component_thresholds = {
+    "soxx_5d_max": -0.030,
+    "soxx_10d_max": -0.045,
+    "soxx_dd_21_max": -0.060,
+    "qqqm_5d_max": -0.020,
+    "qqqm_10d_max": -0.035,
+    "qqqm_dd_21_max": -0.045,
+}
 
 # TQQQ overlay only applies when QQQM is the top signal asset.
 tiered_tqqq_rule = {
@@ -231,6 +282,15 @@ soxx_1m = prices["SOXX"].pct_change(21)
 soxx_3m = prices["SOXX"].pct_change(63)
 soxx_rel_spy_1m = soxx_1m - spy_ret_1m
 
+# Short-term breakdown indicators for the conditional divergence trigger.
+# These are NOT used to reduce TQQQ unless divergence is already high.
+soxx_5d = prices["SOXX"].pct_change(5)
+soxx_10d = prices["SOXX"].pct_change(10)
+soxx_dd_21 = prices["SOXX"] / prices["SOXX"].rolling(21).max() - 1.0
+qqqm_5d = prices["QQQM"].pct_change(5)
+qqqm_10d = prices["QQQM"].pct_change(10)
+qqqm_dd_21 = prices["QQQM"] / prices["QQQM"].rolling(21).max() - 1.0
+
 hyg_1m = prices["HYG"].pct_change(21)
 hyg_3m = prices["HYG"].pct_change(63)
 hyg_6m = prices["HYG"].pct_change(126)
@@ -276,6 +336,22 @@ materials_strength = (
     + 0.25 * copper_3m_strength
     + 0.15 * xlb_strength
 ).fillna(0.0).clip(-3, 3)
+
+# Divergence detector:
+#   Positive = tech/semis are strong, but industrial/copper/materials confirmation is weak.
+#   It does not force an exit by itself. It becomes dangerous when risk-off also rises.
+tech_real_economy_divergence = (
+    0.50 * soxx_strength
+    + 0.50 * qqqm_strength
+    - 0.35 * industrial_strength
+    - 0.35 * materials_strength
+    - 0.30 * copper_strength
+).fillna(0.0).clip(-5, 5)
+
+crash_pressure = (
+    0.60 * tech_real_economy_divergence
+    + 0.40 * risk_off_strength
+).fillna(0.0).clip(-5, 5)
 
 # ============================================================
 # 5. FEATURE BUILDER
@@ -346,6 +422,12 @@ def build_features_by_asset(sector_etfs: list):
             "soxx_1m": soxx_1m,
             "soxx_3m": soxx_3m,
             "soxx_rel_spy_1m": soxx_rel_spy_1m,
+            "soxx_5d": soxx_5d,
+            "soxx_10d": soxx_10d,
+            "soxx_dd_21": soxx_dd_21,
+            "qqqm_5d": qqqm_5d,
+            "qqqm_10d": qqqm_10d,
+            "qqqm_dd_21": qqqm_dd_21,
 
             "hyg_1m": hyg_1m,
             "hyg_3m": hyg_3m,
@@ -364,6 +446,8 @@ def build_features_by_asset(sector_etfs: list):
             "risk_off_strength": risk_off_strength,
             "industrial_strength": industrial_strength,
             "materials_strength": materials_strength,
+            "tech_real_economy_divergence": tech_real_economy_divergence,
+            "crash_pressure": crash_pressure,
 
             "is_QQQM": is_QQQM,
             "is_XLE": is_XLE,
@@ -400,6 +484,8 @@ def build_features_by_asset(sector_etfs: list):
             "war_XLE": war_strength * is_XLE,
             "growth_QQQM": growth_strength * is_QQQM,
             "risk_off_QQQM": risk_off_strength * is_QQQM,
+            "divergence_QQQM": tech_real_economy_divergence * is_QQQM,
+            "crash_pressure_QQQM": crash_pressure * is_QQQM,
             "risk_off_XSOE": risk_off_strength * is_XSOE,
             "risk_off_XLI": risk_off_strength * is_XLI,
             "risk_off_XLB": risk_off_strength * is_XLB,
@@ -471,6 +557,24 @@ def apply_regime_overlay(raw_preds: dict, date: pd.Timestamp, sector_etfs: list,
     usd_regime = val(usd_3m_strength)
     hyg_regime = val(hyg_strength)
     credit_regime = val(credit_strength)
+    divergence = val(tech_real_economy_divergence)
+    crash = val(crash_pressure)
+
+    # Conditional SOXX/QQQM breakdown data.
+    soxx_5d_now = val(soxx_5d)
+    soxx_10d_now = val(soxx_10d)
+    soxx_dd_21_now = val(soxx_dd_21)
+    qqqm_5d_now = val(qqqm_5d)
+    qqqm_10d_now = val(qqqm_10d)
+    qqqm_dd_21_now = val(qqqm_dd_21)
+
+    breakdown_score = 0.0
+    breakdown_score += 1.0 if soxx_5d_now <= breakdown_component_thresholds["soxx_5d_max"] else 0.0
+    breakdown_score += 1.0 if soxx_10d_now <= breakdown_component_thresholds["soxx_10d_max"] else 0.0
+    breakdown_score += 1.0 if soxx_dd_21_now <= breakdown_component_thresholds["soxx_dd_21_max"] else 0.0
+    breakdown_score += 1.0 if qqqm_5d_now <= breakdown_component_thresholds["qqqm_5d_max"] else 0.0
+    breakdown_score += 1.0 if qqqm_10d_now <= breakdown_component_thresholds["qqqm_10d_max"] else 0.0
+    breakdown_score += 1.0 if qqqm_dd_21_now <= breakdown_component_thresholds["qqqm_dd_21_max"] else 0.0
 
     adjusted = raw_preds.copy()
 
@@ -622,6 +726,15 @@ def apply_regime_overlay(raw_preds: dict, date: pd.Timestamp, sector_etfs: list,
         "usd_3m_strength": usd_regime,
         "hyg_strength": hyg_regime,
         "credit_strength": credit_regime,
+        "tech_real_economy_divergence": divergence,
+        "crash_pressure": crash,
+        "soxx_5d": soxx_5d_now,
+        "soxx_10d": soxx_10d_now,
+        "soxx_dd_21": soxx_dd_21_now,
+        "qqqm_5d": qqqm_5d_now,
+        "qqqm_10d": qqqm_10d_now,
+        "qqqm_dd_21": qqqm_dd_21_now,
+        "breakdown_score": breakdown_score,
         "overlay_style": overlay_style,
     }
     return adjusted, overlay_info
@@ -759,6 +872,64 @@ def multi_asset_leverage_fraction(asset: str, top_asset: str, score_gap: float, 
     return float(np.clip(frac, 0.0, 0.60))
 
 
+def conditional_breakdown_defense_level(overlay_info: dict) -> str:
+    """
+    Conditional trigger:
+    - Divergence alone does nothing.
+    - Defense activates only when SOXX/QQQM actually starts breaking.
+    """
+    if not use_conditional_breakdown_defense:
+        return "off"
+
+    divergence = float(overlay_info.get("tech_real_economy_divergence", 0.0))
+    risk_off = float(overlay_info.get("risk_off_strength", 0.0))
+    breakdown_score = float(overlay_info.get("breakdown_score", 0.0))
+
+    for level in ["danger", "warning", "watch"]:
+        rule = conditional_breakdown_rules[level]
+        if (
+            divergence >= rule["divergence_min"]
+            and breakdown_score >= rule["breakdown_score_min"]
+            and risk_off >= rule["risk_off_min"]
+        ):
+            return level
+    return "normal"
+
+
+def apply_conditional_breakdown_defense(exec_weights: dict, overlay_info: dict) -> dict:
+    """
+    Reduce TQQQ only after tech leadership starts failing.
+    Freed TQQQ exposure is first moved to QQQM; optional cash buffer then scales down risk.
+    """
+    level = conditional_breakdown_defense_level(overlay_info)
+    if level in ("off", "normal"):
+        return exec_weights
+
+    rule = conditional_breakdown_rules[level]
+    tqqq_multiplier = rule["tqqq_multiplier"]
+    cash_buffer = rule["cash_buffer"]
+
+    old_tqqq = exec_weights.get("TQQQ", 0.0)
+    new_tqqq = old_tqqq * tqqq_multiplier
+    freed_from_tqqq = old_tqqq - new_tqqq
+
+    exec_weights["TQQQ"] = new_tqqq
+    exec_weights["QQQM"] = exec_weights.get("QQQM", 0.0) + freed_from_tqqq
+
+    if cash_buffer > 0:
+        for asset in list(exec_weights.keys()):
+            if asset != cash_etf:
+                exec_weights[asset] *= (1.0 - cash_buffer)
+        exec_weights[cash_etf] = exec_weights.get(cash_etf, 0.0) + cash_buffer
+
+    total = sum(exec_weights.values())
+    if total > 0 and abs(total - 1.0) > 1e-8:
+        for asset in exec_weights:
+            exec_weights[asset] /= total
+
+    return exec_weights
+
+
 def build_execution_weights(
     signal_weights: dict,
     overlay_fraction: float,
@@ -811,6 +982,8 @@ def build_execution_weights(
             if asset != cash_etf:
                 exec_weights[asset] *= (1.0 - defensive_cash)
         exec_weights[cash_etf] = defensive_cash
+
+    exec_weights = apply_conditional_breakdown_defense(exec_weights, overlay_info)
 
     return exec_weights
 
@@ -892,6 +1065,7 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
             overlay_info=overlay_info,
             date=rebalance_date,
         )
+        overlay_info["conditional_breakdown_defense_level"] = conditional_breakdown_defense_level(overlay_info)
 
         turnover = compute_turnover(current_exec_weights, exec_weights, exec_universe)
         turnover_list.append(turnover)
@@ -923,6 +1097,7 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
             "tx_cost_applied": cost,
             "overlay_fraction": overlay_fraction,
             **overlay_info,
+            "conditional_breakdown_defense_level": conditional_breakdown_defense_level(overlay_info),
         }
         for a in sector_etfs:
             row[f"raw_pred_{a}"] = raw_preds.get(a, np.nan)
@@ -995,6 +1170,7 @@ def get_latest_recommendation(model_name: str, sector_etfs: list, features_by_as
             overlay_info=overlay_info,
             date=latest_date,
         )
+        overlay_info["conditional_breakdown_defense_level"] = conditional_breakdown_defense_level(overlay_info)
 
         feature_importance_df = pd.DataFrame({
             "feature": x_train.columns,
@@ -1015,6 +1191,7 @@ def get_latest_recommendation(model_name: str, sector_etfs: list, features_by_as
             "second_score": second_score,
             "score_gap": score_gap,
             "overlay_fraction": overlay_fraction,
+            "conditional_breakdown_defense_level": conditional_breakdown_defense_level(overlay_info),
             **overlay_info,
         }
     return None
@@ -1058,6 +1235,9 @@ def print_latest(latest: dict, sector_etfs: list):
     print(f"Materials strength: {latest['materials_strength']:.3f}")
     print(f"USD 3M strength: {latest['usd_3m_strength']:.3f}")
     print(f"Credit strength: {latest['credit_strength']:.3f}")
+    print(f"Tech/real-economy divergence: {latest['tech_real_economy_divergence']:.3f}")
+    print(f"Crash pressure: {latest['crash_pressure']:.3f}")
+    print(f"Divergence defense level: {latest.get('conditional_breakdown_defense_level', 'normal')}")
 
     print_weights("Suggested SIGNAL Weights", latest["signal_weights"], sector_etfs + [cash_etf])
     print_weights("Suggested EXECUTED Weights", latest["exec_weights"], ["TQQQ", "ERX", "UXI"] + sector_etfs + [cash_etf])
@@ -1090,6 +1270,9 @@ def save_latest(prefix: str, latest: dict):
         "usd_3m_strength": latest["usd_3m_strength"],
         "hyg_strength": latest["hyg_strength"],
         "credit_strength": latest["credit_strength"],
+        "tech_real_economy_divergence": latest["tech_real_economy_divergence"],
+        "crash_pressure": latest["crash_pressure"],
+        "conditional_breakdown_defense_level": latest.get("conditional_breakdown_defense_level", "normal"),
         **{f"signal_w_{k}": v for k, v in latest["signal_weights"].items()},
         **{f"exec_w_{k}": v for k, v in latest["exec_weights"].items()},
         **{f"raw_pred_{k}": v for k, v in latest["raw_predictions"].items()},
@@ -1098,171 +1281,172 @@ def save_latest(prefix: str, latest: dict):
     latest_df.to_csv(f"{prefix}_latest_recommendation.csv", index=False)
     latest["feature_importance"].to_csv(f"{prefix}_feature_importance.csv", index=False)
 
-# ============================================================
-# 11. RUN BOTH MODELS
-# ============================================================
-print("\nBuilding baseline feature set...")
-baseline_features = build_features_by_asset(BASELINE_SECTOR_ETFS)
 
-print("Building upgraded XLI/XLB feature set...")
+
+# ============================================================
+# 11. PRODUCTION RUN: CURRENT BEST MODEL + DIVERGENCE ALERTS
+# ============================================================
+# This script keeps your trading model unchanged.
+#
+# Important:
+#   Divergence / SOXX breakdown is ALERT ONLY.
+#   It does NOT automatically reduce TQQQ.
+#
+# Why:
+#   Previous tests showed no-defense was best in the tested 2023-2026 period.
+#   So divergence is useful as monitoring information, not yet proven as a trading rule.
+
+
+PRODUCTION_PREFIX = "model_c_plus_current_best_with_divergence_alerts"
+
+# Make sure conditional defense is OFF.
+# We still calculate divergence and breakdown variables for monitoring.
+use_conditional_breakdown_defense = False
+
+
+def classify_divergence_alert(latest: dict) -> str:
+    """
+    Alert-only classification.
+    It does not change weights.
+    """
+    divergence = float(latest.get("tech_real_economy_divergence", 0.0))
+    breakdown_score = float(latest.get("breakdown_score", 0.0))
+    risk_off = float(latest.get("risk_off_strength", 0.0))
+    soxx = float(latest.get("soxx_strength", 0.0))
+    growth = float(latest.get("growth_strength", 0.0))
+
+    # Highest concern: divergence + actual tech breakdown + risk-off rising.
+    if divergence >= 3.0 and breakdown_score >= 2 and risk_off >= 0.0:
+        return "DANGER: high divergence + SOXX/QQQM breakdown + risk-off rising"
+
+    if divergence >= 2.5 and breakdown_score >= 1 and risk_off >= -0.25:
+        return "WARNING: high divergence + early SOXX/QQQM weakness"
+
+    if divergence >= 2.5 and soxx > 1.0 and growth > 1.0:
+        return "WATCH: narrow tech-led rally; no action unless SOXX breaks"
+
+    if breakdown_score >= 2 and risk_off >= 0.0:
+        return "WARNING: tech breakdown pressure, but divergence not extreme"
+
+    return "NORMAL"
+
+
+def build_alert_row(latest: dict) -> pd.DataFrame:
+    """
+    Save a compact alert dashboard CSV.
+    """
+    row = {
+        "signal_date": latest["date"],
+        "latest_data_date": prices.index[-1],
+        "top_asset": latest["top_asset"],
+        "second_asset": latest["second_asset"],
+        "top_score": latest["top_score"],
+        "second_score": latest["second_score"],
+        "score_gap": latest["score_gap"],
+        "overlay_fraction": latest["overlay_fraction"],
+
+        "alert_level": classify_divergence_alert(latest),
+
+        "growth_strength": latest.get("growth_strength", np.nan),
+        "soxx_strength": latest.get("soxx_strength", np.nan),
+        "risk_off_strength": latest.get("risk_off_strength", np.nan),
+        "industrial_strength": latest.get("industrial_strength", np.nan),
+        "materials_strength": latest.get("materials_strength", np.nan),
+        "copper_strength": latest.get("copper_strength", np.nan),
+        "credit_strength": latest.get("credit_strength", np.nan),
+
+        "tech_real_economy_divergence": latest.get("tech_real_economy_divergence", np.nan),
+        "crash_pressure": latest.get("crash_pressure", np.nan),
+        "breakdown_score": latest.get("breakdown_score", np.nan),
+
+        "soxx_5d": latest.get("soxx_5d", np.nan),
+        "soxx_10d": latest.get("soxx_10d", np.nan),
+        "soxx_dd_21": latest.get("soxx_dd_21", np.nan),
+        "qqqm_5d": latest.get("qqqm_5d", np.nan),
+        "qqqm_10d": latest.get("qqqm_10d", np.nan),
+        "qqqm_dd_21": latest.get("qqqm_dd_21", np.nan),
+
+        **{f"signal_w_{k}": v for k, v in latest["signal_weights"].items()},
+        **{f"exec_w_{k}": v for k, v in latest["exec_weights"].items()},
+        **{f"raw_pred_{k}": v for k, v in latest["raw_predictions"].items()},
+        **{f"adj_pred_{k}": v for k, v in latest["adjusted_predictions"].items()},
+    }
+    return pd.DataFrame([row])
+
+
+def print_alert_dashboard(latest: dict):
+    print("\n========================")
+    print("DIVERGENCE / BREAKDOWN ALERT DASHBOARD")
+    print("========================")
+    print("Alert:", classify_divergence_alert(latest))
+    print(f"Tech/real-economy divergence: {latest.get('tech_real_economy_divergence', np.nan):.3f}")
+    print(f"Crash pressure:               {latest.get('crash_pressure', np.nan):.3f}")
+    print(f"Breakdown score:              {latest.get('breakdown_score', np.nan):.1f}")
+    print(f"SOXX 5d:                      {latest.get('soxx_5d', np.nan):.3f}")
+    print(f"SOXX 10d:                     {latest.get('soxx_10d', np.nan):.3f}")
+    print(f"SOXX 21d drawdown:            {latest.get('soxx_dd_21', np.nan):.3f}")
+    print(f"QQQM 5d:                      {latest.get('qqqm_5d', np.nan):.3f}")
+    print(f"QQQM 10d:                     {latest.get('qqqm_10d', np.nan):.3f}")
+    print(f"QQQM 21d drawdown:            {latest.get('qqqm_dd_21', np.nan):.3f}")
+
+    print("\nInterpretation:")
+    print("- NORMAL: no special warning.")
+    print("- WATCH: divergence is high, but tech still leads. Monitor only.")
+    print("- WARNING: divergence plus early SOXX/QQQM weakness. Be careful with new TQQQ buys.")
+    print("- DANGER: divergence plus breakdown plus risk-off. Consider manual risk reduction.")
+
+
+# ============================================================
+# 12. RUN CURRENT BEST MODEL
+# ============================================================
+print("\nBuilding upgraded feature set...")
 upgraded_features = build_features_by_asset(UPGRADED_SECTOR_ETFS)
 
-print("\nRunning baseline model...")
-baseline_returns, baseline_rebalance, baseline_turnover = run_strategy(
-    "BASELINE_QQQM_XLE_XSOE", BASELINE_SECTOR_ETFS, baseline_features
-)
-
-print("Running upgraded V1 model...")
-upgraded_returns, upgraded_rebalance, upgraded_turnover = run_strategy(
-    "UPGRADED_V1_QQQM_XLE_XSOE_XLI_XLB", UPGRADED_SECTOR_ETFS, upgraded_features, overlay_style="v1"
-)
-
-print("Running upgraded V2 model...")
-upgraded_v2_returns, upgraded_v2_rebalance, upgraded_v2_turnover = run_strategy(
-    "UPGRADED_V2_INDUSTRIAL_CLASSIFIER", UPGRADED_SECTOR_ETFS, upgraded_features, overlay_style="v2"
-)
-
-print("Running HYBRID fast-growth/adaptive model...")
-hybrid_returns, hybrid_rebalance, hybrid_turnover = run_strategy(
-    "HYBRID_FAST_GROWTH_ADAPTIVE", UPGRADED_SECTOR_ETFS, upgraded_features, overlay_style="hybrid"
-)
-
-print("Running HYBRID + conviction/volatility + multi-asset leverage + defensive layer model...")
-hybrid_dyn_returns, hybrid_dyn_rebalance, hybrid_dyn_turnover = run_strategy(
-    "HYBRID_MULTI_ASSET_DEFENSIVE",
+print("\nRunning current best production model...")
+current_returns, current_rebalance, current_turnover = run_strategy(
+    "CURRENT_BEST_WITH_DIVERGENCE_ALERTS",
     UPGRADED_SECTOR_ETFS,
     upgraded_features,
     overlay_style="hybrid",
     tqqq_style="dynamic",
 )
 
-if len(baseline_returns) == 0 or len(upgraded_returns) == 0 or len(upgraded_v2_returns) == 0 or len(hybrid_returns) == 0 or len(hybrid_dyn_returns) == 0:
-    raise ValueError("One of the models produced no returns.")
-
-# Common sample comparison across all models.
-common_idx = baseline_returns.index.intersection(upgraded_returns.index).intersection(upgraded_v2_returns.index).intersection(hybrid_returns.index).intersection(hybrid_dyn_returns.index)
-baseline_common = baseline_returns.loc[common_idx]
-upgraded_common = upgraded_returns.loc[common_idx]
-upgraded_v2_common = upgraded_v2_returns.loc[common_idx]
-hybrid_common = hybrid_returns.loc[common_idx]
-hybrid_dyn_common = hybrid_dyn_returns.loc[common_idx]
+if len(current_returns) == 0:
+    raise ValueError("Current best model produced no returns.")
 
 summary_df = pd.DataFrame([
-    performance_summary("BASELINE_FULL", baseline_returns, baseline_turnover),
-    performance_summary("UPGRADED_V1_FULL", upgraded_returns, upgraded_turnover),
-    performance_summary("UPGRADED_V2_FULL", upgraded_v2_returns, upgraded_v2_turnover),
-    performance_summary("HYBRID_FULL", hybrid_returns, hybrid_turnover),
-    performance_summary("HYBRID_DYNAMIC_FULL", hybrid_dyn_returns, hybrid_dyn_turnover),
-    performance_summary("BASELINE_COMMON", baseline_common, baseline_turnover),
-    performance_summary("UPGRADED_V1_COMMON", upgraded_common, upgraded_turnover),
-    performance_summary("UPGRADED_V2_COMMON", upgraded_v2_common, upgraded_v2_turnover),
-    performance_summary("HYBRID_COMMON", hybrid_common, hybrid_turnover),
-    performance_summary("HYBRID_DYNAMIC_COMMON", hybrid_dyn_common, hybrid_dyn_turnover),
+    performance_summary("CURRENT_BEST_WITH_DIVERGENCE_ALERTS", current_returns, current_turnover)
 ])
 
-print("\n=== BASELINE VS V1 VS V2 VS HYBRID VS DYNAMIC PERFORMANCE SUMMARY ===")
+print("\n=== CURRENT BEST PERFORMANCE SUMMARY ===")
 print(summary_df.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
 
-print("\n=== DELTA ON COMMON SAMPLE ===")
-base = summary_df[summary_df["model"] == "BASELINE_COMMON"].iloc[0]
-v1 = summary_df[summary_df["model"] == "UPGRADED_V1_COMMON"].iloc[0]
-v2 = summary_df[summary_df["model"] == "UPGRADED_V2_COMMON"].iloc[0]
-print("V1 vs baseline:")
-print(f"  Delta annual return: {v1['annual_return'] - base['annual_return']:.4f}")
-print(f"  Delta volatility:     {v1['volatility'] - base['volatility']:.4f}")
-print(f"  Delta Sharpe:         {v1['sharpe'] - base['sharpe']:.4f}")
-print(f"  Delta max drawdown:   {v1['max_drawdown'] - base['max_drawdown']:.4f}")
-print("V2 vs baseline:")
-print(f"  Delta annual return: {v2['annual_return'] - base['annual_return']:.4f}")
-print(f"  Delta volatility:     {v2['volatility'] - base['volatility']:.4f}")
-print(f"  Delta Sharpe:         {v2['sharpe'] - base['sharpe']:.4f}")
-print(f"  Delta max drawdown:   {v2['max_drawdown'] - base['max_drawdown']:.4f}")
-print("V2 vs V1:")
-print(f"  Delta annual return: {v2['annual_return'] - v1['annual_return']:.4f}")
-print(f"  Delta volatility:     {v2['volatility'] - v1['volatility']:.4f}")
-print(f"  Delta Sharpe:         {v2['sharpe'] - v1['sharpe']:.4f}")
-print(f"  Delta max drawdown:   {v2['max_drawdown'] - v1['max_drawdown']:.4f}")
+latest = get_latest_recommendation(
+    "CURRENT_BEST_WITH_DIVERGENCE_ALERTS",
+    UPGRADED_SECTOR_ETFS,
+    upgraded_features,
+    overlay_style="hybrid",
+    tqqq_style="dynamic",
+)
 
-print("\n=== Last 10 Upgraded V1 Rebalances ===")
-print(upgraded_rebalance.tail(10).to_string(index=False))
-print("\n=== Last 10 Upgraded V2 Rebalances ===")
-print(upgraded_v2_rebalance.tail(10).to_string(index=False))
+print_latest(latest, UPGRADED_SECTOR_ETFS)
+print_alert_dashboard(latest)
 
-latest_baseline = get_latest_recommendation("BASELINE_QQQM_XLE_XSOE", BASELINE_SECTOR_ETFS, baseline_features, overlay_style="v1")
-latest_upgraded = get_latest_recommendation("UPGRADED_V1_QQQM_XLE_XSOE_XLI_XLB", UPGRADED_SECTOR_ETFS, upgraded_features, overlay_style="v1")
-latest_upgraded_v2 = get_latest_recommendation("UPGRADED_V2_INDUSTRIAL_CLASSIFIER", UPGRADED_SECTOR_ETFS, upgraded_features, overlay_style="v2")
-latest_hybrid = get_latest_recommendation("HYBRID_FAST_GROWTH_ADAPTIVE", UPGRADED_SECTOR_ETFS, upgraded_features, overlay_style="hybrid")
-latest_hybrid_dyn = get_latest_recommendation("HYBRID_MULTI_ASSET_DEFENSIVE", UPGRADED_SECTOR_ETFS, upgraded_features, overlay_style="hybrid", tqqq_style="dynamic")
-
-print_latest(latest_baseline, BASELINE_SECTOR_ETFS)
-print_latest(latest_upgraded, UPGRADED_SECTOR_ETFS)
-print_latest(latest_upgraded_v2, UPGRADED_SECTOR_ETFS)
-print_latest(latest_hybrid, UPGRADED_SECTOR_ETFS)
-print_latest(latest_hybrid_dyn, UPGRADED_SECTOR_ETFS)
+alert_df = build_alert_row(latest)
 
 # ============================================================
-# 12. SAVE OUTPUTS
+# 13. SAVE OUTPUTS
 # ============================================================
-base_prefix = "model_c_plus_baseline_tqqq_tiered_overlay"
-up_prefix = "model_c_plus_xli_xlb_industrial_tqqq_tiered_overlay_v1"
-up_v2_prefix = "model_c_plus_xli_xlb_industrial_classifier_v2"
-hybrid_prefix = "model_c_plus_hybrid_fast_growth_adaptive"
-hybrid_dyn_prefix = "model_c_plus_hybrid_multi_asset_defensive"
-compare_prefix = "compare_baseline_vs_xli_xlb_v1_v2_hybrid_multi_defensive"
-
-baseline_returns.to_csv(f"{base_prefix}_portfolio_daily_returns.csv", header=["portfolio_return"])
-baseline_rebalance.to_csv(f"{base_prefix}_rebalance_log.csv", index=False)
-save_latest(base_prefix, latest_baseline)
-
-upgraded_returns.to_csv(f"{up_prefix}_portfolio_daily_returns.csv", header=["portfolio_return"])
-upgraded_rebalance.to_csv(f"{up_prefix}_rebalance_log.csv", index=False)
-save_latest(up_prefix, latest_upgraded)
-
-upgraded_v2_returns.to_csv(f"{up_v2_prefix}_portfolio_daily_returns.csv", header=["portfolio_return"])
-upgraded_v2_rebalance.to_csv(f"{up_v2_prefix}_rebalance_log.csv", index=False)
-save_latest(up_v2_prefix, latest_upgraded_v2)
-
-hybrid_returns.to_csv(f"{hybrid_prefix}_portfolio_daily_returns.csv", header=["portfolio_return"])
-hybrid_rebalance.to_csv(f"{hybrid_prefix}_rebalance_log.csv", index=False)
-save_latest(hybrid_prefix, latest_hybrid)
-
-hybrid_dyn_returns.to_csv(f"{hybrid_dyn_prefix}_portfolio_daily_returns.csv", header=["portfolio_return"])
-hybrid_dyn_rebalance.to_csv(f"{hybrid_dyn_prefix}_rebalance_log.csv", index=False)
-save_latest(hybrid_dyn_prefix, latest_hybrid_dyn)
-
-summary_df.to_csv(f"{compare_prefix}_performance_summary.csv", index=False)
-pd.DataFrame({
-    "baseline_return": baseline_common,
-    "upgraded_v1_return": upgraded_common,
-    "upgraded_v2_return": upgraded_v2_common,
-    "hybrid_return": hybrid_common,
-    "hybrid_dynamic_return": hybrid_dyn_common,
-    "delta_v1_vs_baseline": upgraded_common - baseline_common,
-    "delta_v2_vs_baseline": upgraded_v2_common - baseline_common,
-    "delta_hybrid_vs_baseline": hybrid_common - baseline_common,
-    "delta_hybrid_vs_v2": hybrid_common - upgraded_v2_common,
-    "delta_hybrid_dynamic_vs_baseline": hybrid_dyn_common - baseline_common,
-    "delta_hybrid_dynamic_vs_hybrid": hybrid_dyn_common - hybrid_common,
-    "delta_hybrid_dynamic_vs_v2": hybrid_dyn_common - upgraded_v2_common,
-    "delta_v2_vs_v1": upgraded_v2_common - upgraded_common,
-}).to_csv(f"{compare_prefix}_daily_returns_common_sample.csv")
+current_returns.to_csv(f"{PRODUCTION_PREFIX}_portfolio_daily_returns.csv", header=["portfolio_return"])
+current_rebalance.to_csv(f"{PRODUCTION_PREFIX}_rebalance_log.csv", index=False)
+summary_df.to_csv(f"{PRODUCTION_PREFIX}_performance_summary.csv", index=False)
+save_latest(PRODUCTION_PREFIX, latest)
+alert_df.to_csv(f"{PRODUCTION_PREFIX}_alert_dashboard.csv", index=False)
 
 print("\nSaved:")
-print(f"- {base_prefix}_portfolio_daily_returns.csv")
-print(f"- {base_prefix}_rebalance_log.csv")
-print(f"- {base_prefix}_latest_recommendation.csv")
-print(f"- {base_prefix}_feature_importance.csv")
-print(f"- {up_prefix}_portfolio_daily_returns.csv")
-print(f"- {up_prefix}_rebalance_log.csv")
-print(f"- {up_prefix}_latest_recommendation.csv")
-print(f"- {up_prefix}_feature_importance.csv")
-print(f"- {up_v2_prefix}_portfolio_daily_returns.csv")
-print(f"- {up_v2_prefix}_rebalance_log.csv")
-print(f"- {up_v2_prefix}_latest_recommendation.csv")
-print(f"- {up_v2_prefix}_feature_importance.csv")
-print(f"- {hybrid_dyn_prefix}_portfolio_daily_returns.csv")
-print(f"- {hybrid_dyn_prefix}_rebalance_log.csv")
-print(f"- {hybrid_dyn_prefix}_latest_recommendation.csv")
-print(f"- {hybrid_dyn_prefix}_feature_importance.csv")
-print(f"- {compare_prefix}_performance_summary.csv")
-print(f"- {compare_prefix}_daily_returns_common_sample.csv")
+print(f"- {PRODUCTION_PREFIX}_portfolio_daily_returns.csv")
+print(f"- {PRODUCTION_PREFIX}_rebalance_log.csv")
+print(f"- {PRODUCTION_PREFIX}_performance_summary.csv")
+print(f"- {PRODUCTION_PREFIX}_latest_recommendation.csv")
+print(f"- {PRODUCTION_PREFIX}_feature_importance.csv")
+print(f"- {PRODUCTION_PREFIX}_alert_dashboard.csv")
