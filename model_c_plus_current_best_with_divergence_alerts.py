@@ -1178,14 +1178,16 @@ def get_latest_recommendation(model_name: str, sector_etfs: list, features_by_as
             overlay_fraction = tqqq_dynamic_replace_fraction(top_asset, top_score, second_score, overlay_info, latest_date)
         else:
             overlay_fraction = tqqq_replace_fraction(top_asset, top_score, second_score, overlay_info, latest_date)
-exec_weights = build_execution_weights(
-    signal_weights,
-    overlay_fraction,
-    sector_etfs,
-    top_asset=top_asset,
-    score_gap=score_gap,
-    overlay_info=overlay_info,
-    date=rebalance_date,
+        exec_weights = build_execution_weights(
+            signal_weights,
+            overlay_fraction,
+            sector_etfs,
+            top_asset=top_asset,
+            score_gap=score_gap,
+            overlay_info=overlay_info,
+            date=latest_date,
+        )
+
         overlay_info["conditional_breakdown_defense_level"] = conditional_breakdown_defense_level(overlay_info)
 
         feature_importance_df = pd.DataFrame({
