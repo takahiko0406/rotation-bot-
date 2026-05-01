@@ -1065,6 +1065,19 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
             overlay_info=overlay_info,
             date=rebalance_date,
         )
+        latest_like = {
+    "exec_weights": exec_weights,
+    "risk_off_strength": overlay_info.get("risk_off_strength", 0.0),
+    "growth_strength": overlay_info.get("growth_strength", 0.0),
+    "soxx_strength": overlay_info.get("soxx_strength", 0.0),
+    "score_gap": score_gap,
+    "top_score": top_score,
+}
+
+latest_like = apply_v2_continuous_tqqq_alert(latest_like)
+exec_weights = latest_like["exec_weights"]
+overlay_info["v2_tqqq_scale"] = latest_like.get("v2_tqqq_scale", 1.0)
+overlay_info["v2_alert_action"] = latest_like.get("v2_alert_action", "NONE")
         overlay_info["conditional_breakdown_defense_level"] = conditional_breakdown_defense_level(overlay_info)
 
         turnover = compute_turnover(current_exec_weights, exec_weights, exec_universe)
@@ -1096,6 +1109,8 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
             "turnover": turnover,
             "tx_cost_applied": cost,
             "overlay_fraction": overlay_fraction,
+            "v2_tqqq_scale": overlay_info.get("v2_tqqq_scale", 1.0),
+            "v2_alert_action": overlay_info.get("v2_alert_action", "NONE"),
             **overlay_info,
             "conditional_breakdown_defense_level": conditional_breakdown_defense_level(overlay_info),
         }
