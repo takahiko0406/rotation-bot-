@@ -1056,29 +1056,7 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
                 overlay_info=overlay_info,
                 date=rebalance_date,
             )
-        exec_weights = build_execution_weights(
-            signal_weights,
-            overlay_fraction,
-            sector_etfs,
-            top_asset=top_asset,
-            score_gap=score_gap,
-            overlay_info=overlay_info,
-            date=rebalance_date,
-        )
-        latest_like = {
-    "exec_weights": exec_weights,
-    "risk_off_strength": overlay_info.get("risk_off_strength", 0.0),
-    "growth_strength": overlay_info.get("growth_strength", 0.0),
-    "soxx_strength": overlay_info.get("soxx_strength", 0.0),
-    "score_gap": score_gap,
-    "top_score": top_score,
-}
-
-latest_like = apply_v2_continuous_tqqq_alert(latest_like)
-exec_weights = latest_like["exec_weights"]
-overlay_info["v2_tqqq_scale"] = latest_like.get("v2_tqqq_scale", 1.0)
-overlay_info["v2_alert_action"] = latest_like.get("v2_alert_action", "NONE")
-        overlay_info["conditional_breakdown_defense_level"] = conditional_breakdown_defense_level(overlay_info)
+ exec_weights = build_execution_weights(
 
         turnover = compute_turnover(current_exec_weights, exec_weights, exec_universe)
         turnover_list.append(turnover)
