@@ -1032,6 +1032,7 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
         second_asset, second_score = ranked[1]
 
         w_top, w_second, score_gap = get_conviction_weights(top_score, second_score)
+
         signal_weights = {a: 0.0 for a in signal_universe}
         signal_weights[top_asset] = w_top
         signal_weights[second_asset] = w_second
@@ -1042,21 +1043,39 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
 
         if tqqq_style == "dynamic":
             overlay_fraction = tqqq_dynamic_replace_fraction(
-                top_asset=top_asset,
-                top_score=top_score,
-                second_score=second_score,
-                overlay_info=overlay_info,
-                date=rebalance_date,
+                top_asset, top_score, second_score, overlay_info, rebalance_date
             )
         else:
             overlay_fraction = tqqq_replace_fraction(
-                top_asset=top_asset,
-                top_score=top_score,
-                second_score=second_score,
-                overlay_info=overlay_info,
-                date=rebalance_date,
+                top_asset, top_score, second_score, overlay_info, rebalance_date
             )
- exec_weights = build_execution_weights(
+
+        exec_weights = build_execution_weights(
+            signal_weights,
+            overlay_fraction,
+            sector_etfs,
+            top_asset=top_asset,
+            score_gap=score_gap,
+            overlay_info=overlay_info,
+            date=latest_date,   # ✅ FIXED
+        )
+
+        overlay_info["conditional_breakdown_defense_level"] = conditional_breakdown_defense_level(overlay_info)
+
+        latest_like = {
+            "exec_weights": exec_weights,
+            "risk_off_strength": overlay_info.get("risk_off_strength", 0.0),
+            "growth_strength": overlay_info.get("growth_strength", 0.0),
+            "soxx_strength": overlay_info.get("soxx_strength", 0.0),
+            "score_gap": score_gap,
+            "top_score": top_score,
+        }
+        latest_like = apply_v2_continuous_tqqq_alert(latest_like)
+        exec_weights = latest_like["exec_weights"]
+
+        overlay_info["v2_tqqq_scale"] = latest_like.get("v2_tqqq_scale", 1.0)
+        overlay_info["v2_alert_action"] = latest_like.get("v2_alert_action", "NONE")
+        overlay_info["conditional_breakdown_defense_level"] = conditional_breakdown_defense_level(overlay_info)
 
         turnover = compute_turnover(current_exec_weights, exec_weights, exec_universe)
         turnover_list.append(turnover)
@@ -1069,7 +1088,10 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
         hold_rets = pd.Series(index=hold_dates, data=0.0)
         for asset, w in exec_weights.items():
             if w != 0:
-                hold_rets = hold_rets.add(w * asset_returns[asset].reindex(hold_dates).fillna(0.0), fill_value=0.0)
+                hold_rets = hold_rets.add(
+                    w * asset_returns[asset].reindex(hold_dates).fillna(0.0),
+                    fill_value=0.0,
+                )
 
         cost = turnover * transaction_cost
         hold_rets.iloc[0] -= cost
@@ -1090,25 +1112,27 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
             "v2_tqqq_scale": overlay_info.get("v2_tqqq_scale", 1.0),
             "v2_alert_action": overlay_info.get("v2_alert_action", "NONE"),
             **overlay_info,
-            "conditional_breakdown_defense_level": conditional_breakdown_defense_level(overlay_info),
         }
+
         for a in sector_etfs:
             row[f"raw_pred_{a}"] = raw_preds.get(a, np.nan)
             row[f"adj_pred_{a}"] = adjusted_preds.get(a, np.nan)
             row[f"signal_w_{a}"] = signal_weights.get(a, 0.0)
             row[f"exec_w_{a}"] = exec_weights.get(a, 0.0)
+
         row[f"signal_w_{cash_etf}"] = signal_weights.get(cash_etf, 0.0)
         row[f"exec_w_{cash_etf}"] = exec_weights.get(cash_etf, 0.0)
         row["exec_w_TQQQ"] = exec_weights.get("TQQQ", 0.0)
         row["exec_w_ERX"] = exec_weights.get("ERX", 0.0)
         row["exec_w_UXI"] = exec_weights.get("UXI", 0.0)
+
         rebalance_records.append(row)
 
     portfolio_daily_returns = portfolio_daily_returns.dropna()
     rebalance_df = pd.DataFrame(rebalance_records)
     avg_turnover = float(np.mean(turnover_list)) if turnover_list else np.nan
-    return portfolio_daily_returns, rebalance_df, avg_turnover
 
+    return portfolio_daily_returns, rebalance_df, avg_turnover
 # ============================================================
 # 9. LATEST RECOMMENDATION
 # ============================================================
@@ -1154,15 +1178,14 @@ def get_latest_recommendation(model_name: str, sector_etfs: list, features_by_as
             overlay_fraction = tqqq_dynamic_replace_fraction(top_asset, top_score, second_score, overlay_info, latest_date)
         else:
             overlay_fraction = tqqq_replace_fraction(top_asset, top_score, second_score, overlay_info, latest_date)
-        exec_weights = build_execution_weights(
-            signal_weights,
-            overlay_fraction,
-            sector_etfs,
-            top_asset=top_asset,
-            score_gap=score_gap,
-            overlay_info=overlay_info,
-            date=latest_date,
-        )
+exec_weights = build_execution_weights(
+    signal_weights,
+    overlay_fraction,
+    sector_etfs,
+    top_asset=top_asset,
+    score_gap=score_gap,
+    overlay_info=overlay_info,
+    date=rebalance_date,
         overlay_info["conditional_breakdown_defense_level"] = conditional_breakdown_defense_level(overlay_info)
 
         feature_importance_df = pd.DataFrame({
