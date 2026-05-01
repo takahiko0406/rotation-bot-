@@ -1057,7 +1057,7 @@ def run_strategy(model_name: str, sector_etfs: list, features_by_asset: dict, ov
             top_asset=top_asset,
             score_gap=score_gap,
             overlay_info=overlay_info,
-            date=latest_date,   # ✅ FIXED
+            date=rebalance_date,
         )
 
         overlay_info["conditional_breakdown_defense_level"] = conditional_breakdown_defense_level(overlay_info)
