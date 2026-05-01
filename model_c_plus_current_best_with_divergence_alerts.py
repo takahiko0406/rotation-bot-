@@ -1259,6 +1259,8 @@ def save_latest(prefix: str, latest: dict):
         "score_gap": latest["score_gap"],
         "overlay_fraction": latest["overlay_fraction"],
         "overlay_style": latest.get("overlay_style", "v1"),
+        "v2_tqqq_scale": latest.get("v2_tqqq_scale", 1.0),
+        "v2_alert_action": latest.get("v2_alert_action", "NONE"),
         "war_strength": latest["war_strength"],
         "growth_strength": latest["growth_strength"],
         "risk_off_strength": latest["risk_off_strength"],
@@ -1281,8 +1283,87 @@ def save_latest(prefix: str, latest: dict):
     latest_df.to_csv(f"{prefix}_latest_recommendation.csv", index=False)
     latest["feature_importance"].to_csv(f"{prefix}_feature_importance.csv", index=False)
 
+                                        
 
 
+def apply_v2_continuous_tqqq_alert(latest: dict) -> dict:
+    """
+    V2 execution overlay.
+    Keeps model prediction unchanged.
+    Only adjusts final TQQQ exposure into QQQM.
+    """
+
+    if latest is None:
+        return latest
+
+    exec_weights = latest["exec_weights"].copy()
+
+    risk_off = float(latest.get("risk_off_strength", 0.0))
+    growth = float(latest.get("growth_strength", 0.0))
+    soxx = float(latest.get("soxx_strength", 0.0))
+    score_gap = float(latest.get("score_gap", 0.0))
+    top_score = float(latest.get("top_score", 0.0))
+
+    if top_score <= 0 or risk_off >= 1.50 or exec_weights.get("BIL", 0.0) >= 0.99:
+        for a in exec_weights:
+            exec_weights[a] = 0.0
+        exec_weights["BIL"] = 1.0
+
+        latest["exec_weights"] = exec_weights
+        latest["v2_tqqq_scale"] = 0.0
+        latest["v2_alert_action"] = "HARD_EXIT_TO_BIL"
+        return latest
+
+    tqqq_scale = 1.0
+
+    if risk_off > 0.30:
+        tqqq_scale *= 0.85
+    if risk_off > 0.50:
+        tqqq_scale *= 0.70
+    if risk_off > 0.75:
+        tqqq_scale *= 0.50
+    if risk_off > 1.00:
+        tqqq_scale *= 0.35
+
+    if soxx < 0.50:
+        tqqq_scale *= 0.80
+    if soxx < 0.00:
+        tqqq_scale *= 0.50
+
+    if growth < 0.50:
+        tqqq_scale *= 0.80
+    if growth < 0.00:
+        tqqq_scale *= 0.50
+
+    if score_gap < 0.010:
+        tqqq_scale *= 0.85
+    if score_gap < 0.003:
+        tqqq_scale *= 0.70
+
+    old_tqqq = exec_weights.get("TQQQ", 0.0)
+    new_tqqq = old_tqqq * tqqq_scale
+    moved_to_qqqm = old_tqqq - new_tqqq
+
+    exec_weights["TQQQ"] = new_tqqq
+    exec_weights["QQQM"] = exec_weights.get("QQQM", 0.0) + moved_to_qqqm
+
+    if risk_off > 1.25:
+        cash_add = 0.20
+        for a in exec_weights:
+            if a != "BIL":
+                exec_weights[a] *= (1.0 - cash_add)
+        exec_weights["BIL"] = exec_weights.get("BIL", 0.0) + cash_add
+
+    total = sum(exec_weights.values())
+    if total > 0:
+        for a in exec_weights:
+            exec_weights[a] /= total
+
+    latest["exec_weights"] = exec_weights
+    latest["v2_tqqq_scale"] = tqqq_scale
+    latest["v2_alert_action"] = "V2_TQQQ_TO_QQQM_OVERLAY"
+
+    return latest
 # ============================================================
 # 11. PRODUCTION RUN: CURRENT BEST MODEL + DIVERGENCE ALERTS
 # ============================================================
@@ -1429,6 +1510,7 @@ latest = get_latest_recommendation(
     tqqq_style="dynamic",
 )
 
+latest = apply_v2_continuous_tqqq_alert(latest)
 print_latest(latest, UPGRADED_SECTOR_ETFS)
 print_alert_dashboard(latest)
 
